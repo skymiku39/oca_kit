@@ -9,6 +9,11 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import pyqtSignal
 
+"""
+YOLO 設定對話框類別
+此類別負責顯示和管理 YOLO 檢測的設定。
+"""
+
 
 class YoloSettingsDialog(QDialog):
     detection_settings_changed = pyqtSignal(dict)
@@ -22,12 +27,12 @@ class YoloSettingsDialog(QDialog):
     def init_ui(self):
         form_layout = QFormLayout()
 
-        # Detection enable checkbox
+        # 檢測啟用的勾選框
         self.enable_checkbox = QCheckBox("啟用檢測")
         self.enable_checkbox.setChecked(self.detection_settings.get("enabled", False))
         form_layout.addRow("檢測啟用:", self.enable_checkbox)
 
-        # Model selection: QComboBox and a browse button
+        # 模型選擇：下拉選單和瀏覽按鈕
         self.model_combo = QComboBox()
         default_models = [
             "yolov8n.pt",
@@ -50,14 +55,14 @@ class YoloSettingsDialog(QDialog):
         hbox_model.addWidget(self.choose_model_btn)
         form_layout.addRow("模型:", hbox_model)
 
-        # Detection mode selection
+        # 檢測模式選擇
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["拼接圖片檢測", "單張圖片檢測"])
         current_mode = self.detection_settings.get("mode", "拼接圖片檢測")
         self.mode_combo.setCurrentText(current_mode)
         form_layout.addRow("檢測方式:", self.mode_combo)
 
-        # Action buttons
+        # 操作按鈕
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("儲存")
         save_btn.clicked.connect(self.on_save)

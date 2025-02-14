@@ -23,16 +23,24 @@ import numpy as np
 import cv2
 import json
 
+"""
+主視窗類別
+此類別負責管理應用程式的主界面和功能。
+"""
+
+# 定義顏色常數
 COLORS = [
-    (255, 0, 0),  # Red
-    (0, 255, 0),  # Green
-    (0, 0, 255),  # Blue
-    (255, 255, 0),  # Yellow
-    (255, 0, 255),  # Magenta
-    (0, 255, 255),  # Cyan
+    (255, 0, 0),  # 紅色
+    (0, 255, 0),  # 綠色
+    (0, 0, 255),  # 藍色
+    (255, 255, 0),  # 黃色
+    (255, 0, 255),  # 品紅色
+    (0, 255, 255),  # 青色
 ]
 
 
+# 主視窗類別
+# 此類別負責管理應用程式的主界面和功能。
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -304,11 +312,11 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             for obj in data.get("labels", []):
                 label_type = obj.get("label_type")
-                # Check if the label is visible
+                # 檢查標籤是否可見
                 if label_type in ["car", "parking", "plate"]:
                     visible = self.label_config_dock.label_states[label_type]["visible"]
                     if not visible:
-                        continue  # Skip drawing if not visible
+                        continue  # 如果不可見則跳過繪製
 
                     # 獲取顏色（目前都使用一般狀態的顏色）
                     color = self.label_config_dock.get_label_color(label_type)
@@ -325,10 +333,10 @@ class MainWindow(QMainWindow):
                             cv2.polylines(image_bgr, poly_np, True, color, 2)
         except FileNotFoundError as e:
             print(f"draw_label_car_polygon error: {e}")
-            return image_bgr  # Return the original image without any modifications
+            return image_bgr  # 返回原始影像
         except Exception as e:
             print(f"draw_label_car_polygon unexpected error: {e}")
-            return image_bgr  # Return the original image without any modifications
+            return image_bgr  # 返回原始影像
 
     def update_label_resized(self):
         """將拼接影像轉換為 QPixmap 並顯示在 QLabel 上"""
@@ -469,14 +477,9 @@ class MainWindow(QMainWindow):
             return frame
 
     def set_camera_capture_data(self, data):
-        """Set camera capture data from loaded settings."""
-        # Assuming data is a dictionary with camera settings
-        # You can implement the logic to apply these settings
+        """從加載的設定中設置相機捕捉資料。"""
         print("Camera capture data set:", data)
-        # Example: self.camera_settings = data
 
     def set_intermediate_test_data(self, data):
-        """Set intermediate test data from loaded settings."""
-        # Assuming data is a dictionary with intermediate test settings
+        """從加載的設定中設置中間測試資料。"""
         print("Intermediate test data set:", data)
-        # Example: self.intermediate_test_settings = data

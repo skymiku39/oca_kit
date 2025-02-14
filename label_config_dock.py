@@ -10,6 +10,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QColor
 
+"""
+標籤配置停靠窗口類別
+此類別負責顯示和管理標籤的顯示設定。
+"""
+
 
 class LabelConfigDock(QDockWidget):
     label_config_changed = pyqtSignal()  # 通知主視窗重繪
