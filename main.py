@@ -40,17 +40,22 @@ class VideoThread(QThread):
         self._running = True
 
     def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
-        if not cap.isOpened():
-            self.error_signal.emit(f"無法開啟來源：{self.rtsp_url}", self.camera_id)
-            return
-
         while self._running:
-            ret, frame = cap.read()
-            if not ret:
-                self.error_signal.emit("讀取畫面失敗", self.camera_id)
-                break
-            self.frame_signal.emit(frame, self.camera_id)
+            cap = cv2.VideoCapture(self.rtsp_url)
+            if not cap.isOpened():
+                self.error_signal.emit(f"無法開啟來源：{self.rtsp_url}", self.camera_id)
+                return
+
+            while self._running:
+                ret, frame = cap.read()
+                if not ret:
+                    self.error_signal.emit(
+                        "讀取畫面失敗，嘗試重新連接...", self.camera_id
+                    )
+                    cap.release()
+                    QThread.sleep(2)  # 暫停2秒後重新連接
+                    break
+                self.frame_signal.emit(frame, self.camera_id)
         cap.release()
 
     def stop(self):
@@ -70,6 +75,8 @@ class CameraSettingsDialog(QDialog):
       4: {...}
     }
     """
+
+    settings_changed = pyqtSignal()  # 新增此行
 
     def __init__(self, configs, parent=None):
         super().__init__(parent)
@@ -121,7 +128,7 @@ class CameraSettingsDialog(QDialog):
 
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("儲存")
-        save_btn.clicked.connect(self.accept)
+        save_btn.clicked.connect(self.on_save)
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(save_btn)
@@ -139,6 +146,10 @@ class CameraSettingsDialog(QDialog):
         )
         if file_path:
             self.label_path_edits[cam_id].setText(file_path)
+
+    def on_save(self):
+        self.settings_changed.emit()  # 發出信號
+        self.accept()
 
     def get_configs(self):
         new_data = {}
@@ -160,7 +171,9 @@ class CameraSettingsDialog(QDialog):
 # =============================================================================
 class LabelConfigDock(QDockWidget):
     """
-    以 QDockWidget 做為側邊欄，內有car的CheckBox(顯示/不顯示)與顏色設定按鈕
+    以 QDockWidget 做為側邊欄，內含:
+    - car/parking/plate 的 CheckBox (顯示/不顯示)
+    - 一般狀態和觸發狀態的顏色設定按鈕
     外部可以透過 signals 來知道使用者是否切換顯示/顏色
     """
 
@@ -170,42 +183,118 @@ class LabelConfigDock(QDockWidget):
         super().__init__("標籤顯示設定", parent)
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
-        # 預設 car 顯示/顏色 (BGR or RGB都行, 這裡用BGR, 方便cv2)
-        # 不過PyQt顏色通常是RGB, 我們再轉換
-        self.car_visible = True
-        self.car_color_bgr = (0, 255, 0)  # 綠色
+        # 預設顯示狀態
+        self.label_states = {
+            "car": {
+                "visible": True,
+                "normal_color": (0, 255, 0),
+                "trigger_color": (255, 0, 0),
+            },
+            "parking": {
+                "visible": True,
+                "normal_color": (255, 255, 0),
+                "trigger_color": (255, 0, 255),
+            },
+            "plate": {
+                "visible": True,
+                "normal_color": (0, 255, 255),
+                "trigger_color": (0, 0, 255),
+            },
+        }
 
         # 建立介面
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        self.check_car = QCheckBox("顯示 car")
-        self.check_car.setChecked(True)
-        self.check_car.clicked.connect(self.on_check_car_changed)
-        layout.addWidget(self.check_car)
+        # 為每種標籤類型建立控制項
+        for label_type in ["car", "parking", "plate"]:
+            # 群組標題
+            layout.addWidget(QLabel(f"=== {label_type} ==="))
 
-        self.btn_car_color = QPushButton("car 顏色")
-        self.btn_car_color.clicked.connect(self.on_btn_car_color)
-        layout.addWidget(self.btn_car_color)
+            # 顯示控制
+            check = QCheckBox(f"顯示 {label_type}")
+            check.setChecked(True)
+            check.clicked.connect(
+                lambda checked, lt=label_type: self.on_visibility_changed(lt, checked)
+            )
+            layout.addWidget(check)
+
+            # 一般顏色
+            normal_btn = QPushButton(f"{label_type} 一般顏色")
+            normal_btn.clicked.connect(
+                lambda _, lt=label_type: self.on_color_button_clicked(lt, "normal")
+            )
+            layout.addWidget(normal_btn)
+
+            # 觸發顏色
+            trigger_btn = QPushButton(f"{label_type} 觸發顏色")
+            trigger_btn.clicked.connect(
+                lambda _, lt=label_type: self.on_color_button_clicked(lt, "trigger")
+            )
+            layout.addWidget(trigger_btn)
+
+            # 加入間隔
+            layout.addSpacing(10)
 
         layout.addStretch()
         widget.setLayout(layout)
         self.setWidget(widget)
 
-    def on_check_car_changed(self):
-        self.car_visible = self.check_car.isChecked()
+    def on_visibility_changed(self, label_type, checked):
+        """當標籤顯示狀態改變時"""
+        self.label_states[label_type]["visible"] = checked
         self.label_config_changed.emit()
 
-    def on_btn_car_color(self):
-        # 打開 PyQt 顏色選擇器
-        initial_qcolor = QColor(
-            self.car_color_bgr[2], self.car_color_bgr[1], self.car_color_bgr[0]
+    def on_color_button_clicked(self, label_type, color_type):
+        """當顏色按鈕被點擊時"""
+        current_color = self.label_states[label_type][f"{color_type}_color"]
+        initial_qcolor = QColor(current_color[2], current_color[1], current_color[0])
+
+        color = QColorDialog.getColor(
+            initial_qcolor, self.widget(), f"選擇 {label_type} {color_type} 顏色"
         )
-        color = QColorDialog.getColor(initial_qcolor, self.widget(), "選擇 car 顏色")
+
         if color.isValid():
-            # 轉成 BGR
-            self.car_color_bgr = (color.blue(), color.green(), color.red())
+            self.label_states[label_type][f"{color_type}_color"] = (
+                color.blue(),
+                color.green(),
+                color.red(),
+            )
             self.label_config_changed.emit()
+
+    def get_label_color(self, label_type, is_trigger=False):
+        """獲取指定標籤類型的當前顏色"""
+        if not self.label_states[label_type]["visible"]:
+            return (0, 0, 0)  # 如果不可見，返回黑色
+
+        color_type = "trigger_color" if is_trigger else "normal_color"
+        return self.label_states[label_type][color_type]
+
+    def save_settings(self, settings):
+        for label_type in self.label_states:
+            settings.setValue(
+                f"{label_type}/visible", self.label_states[label_type]["visible"]
+            )
+            settings.setValue(
+                f"{label_type}/normal_color",
+                self.label_states[label_type]["normal_color"],
+            )
+            settings.setValue(
+                f"{label_type}/trigger_color",
+                self.label_states[label_type]["trigger_color"],
+            )
+
+    def load_settings(self, settings):
+        for label_type in self.label_states:
+            self.label_states[label_type]["visible"] = settings.value(
+                f"{label_type}/visible", True, type=bool
+            )
+            self.label_states[label_type]["normal_color"] = settings.value(
+                f"{label_type}/normal_color", (0, 255, 0), type=tuple
+            )
+            self.label_states[label_type]["trigger_color"] = settings.value(
+                f"{label_type}/trigger_color", (255, 0, 0), type=tuple
+            )
 
 
 # =============================================================================
@@ -214,253 +303,231 @@ class LabelConfigDock(QDockWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("多攝影機 2×2 拼接 (視窗可調整+側邊欄)")
+        self.setWindowTitle("多攝影機 2×2 拼接監控系統")
 
-        self.settings = QSettings("MyCompany", "MyCameraApp")
+        # 預設攝影機設定
         self.default_configs = {
             1: {
                 "ip": "192.168.60.102",
                 "port": "554",
                 "user": "admin",
-                "pwd": "56632513",
+                "pwd": "",
                 "enabled": True,
                 "label_path": "",
             },
             2: {
-                "ip": "192.168.60.103",
+                "ip": "192.168.60.102",
                 "port": "554",
                 "user": "admin",
-                "pwd": "56632513",
+                "pwd": "",
                 "enabled": True,
                 "label_path": "",
             },
             3: {
-                "ip": "192.168.60.104",
+                "ip": "192.168.60.102",
                 "port": "554",
                 "user": "admin",
-                "pwd": "56632513",
+                "pwd": "",
                 "enabled": True,
                 "label_path": "",
             },
             4: {
-                "ip": "192.168.60.105",
+                "ip": "192.168.60.102",
                 "port": "554",
                 "user": "admin",
-                "pwd": "56632513",
+                "pwd": "",
                 "enabled": True,
                 "label_path": "",
             },
         }
+
+        # 集中管理顯示設定
+        self.display_settings = {
+            "aspect_ratio": "16:9",
+            "resolution": "1080p",
+            "rotation": False,
+            "resolutions": {
+                "1080p": {"16:9": (1920, 1080), "9:16": (1080, 1920)},
+                "720p": {"16:9": (1280, 720), "9:16": (720, 1280)},
+            },
+        }
+
+        self.settings = QSettings("MyCompany", "MyCameraApp")
         self.camera_configs = self.load_settings()
 
-        # 多攝影機 Thread & 最新畫面
         self.threads = {}
         self.latest_frames = {}
-        # 內部儲存拼接後(640×480)的「原圖」(BGR)，以便在resizeEvent中做等比例縮放
         self.composited_image_bgr = None
+
+        self.label_config_dock = LabelConfigDock(self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.label_config_dock)
+        self.label_config_dock.label_config_changed.connect(self.update_composite)
 
         self.init_ui()
 
     def init_ui(self):
-        # 選單
-        menubar = self.menuBar()
-        menu = menubar.addMenu("選單")
-        action_settings = QAction("攝影機設定", self)
-        action_settings.triggered.connect(self.open_camera_settings_dialog)
-        menu.addAction(action_settings)
+        # 建立主要控制面板
+        control_panel = self.create_control_panel()
 
-        # 側邊欄( Dock )
-        self.dock_label_config = LabelConfigDock(self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_label_config)
-        self.dock_label_config.label_config_changed.connect(self.update_composite)
+        # 建立顯示區域
+        self.display_label = QLabel()
+        self.display_label.setAlignment(Qt.AlignCenter)
+        self.display_label.setStyleSheet("background-color: black;")
 
-        # 中心Widget
+        # 主要布局
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
-
-        # 上方控制按鈕
-        top_btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("開始串流")
-        self.start_btn.clicked.connect(self.start_streams)
-        self.stop_btn = QPushButton("停止串流")
-        self.stop_btn.clicked.connect(self.stop_streams)
-        top_btn_layout.addWidget(self.start_btn)
-        top_btn_layout.addWidget(self.stop_btn)
-
-        # Add dropdown for aspect ratio and resolution
-        self.aspect_ratio_combo = QComboBox()
-        self.aspect_ratio_combo.addItems(["16:9", "9:16"])
-        self.aspect_ratio_combo.currentTextChanged.connect(self.update_composite)
-
-        self.resolution_combo = QComboBox()
-        self.resolution_combo.addItems(["1080p", "720p"])
-        self.resolution_combo.currentTextChanged.connect(self.update_composite)
-
-        top_btn_layout.addWidget(self.aspect_ratio_combo)
-        top_btn_layout.addWidget(self.resolution_combo)
-
-        main_layout.addLayout(top_btn_layout)
-        # Add checkbox for rotation
-        self.rotation_check = QCheckBox("旋轉")
-        self.rotation_check.stateChanged.connect(self.update_composite)
-
-        self.resolution_combo = QComboBox()
-        self.resolution_combo.addItems(["1080p", "720p"])
-        self.resolution_combo.currentTextChanged.connect(self.update_composite)
-
-        top_btn_layout.addWidget(self.rotation_check)
-        top_btn_layout.addWidget(self.resolution_combo)
-
-        # 下方用QLabel顯示最終拼接圖，但不固定大小
-        # 透過 resizeEvent 自行處理縮放
-        self.label_composite = QLabel()
-        self.label_composite.setStyleSheet("background-color: black; color: white;")
-        self.label_composite.setAlignment(Qt.AlignCenter)
-        self.label_composite.setText("等待影像...")
-        main_layout.addWidget(self.label_composite)
+        main_layout.addLayout(control_panel)
+        main_layout.addWidget(self.display_label)
 
         self.setCentralWidget(central_widget)
-        self.resize(900, 600)  # 給個初始大小
+        self.resize(1200, 800)
 
-    # =============== 視窗大小改變 => 我們重新計算縮放後的圖 ===============
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.update_label_resized()
+        # 建立選單
+        self.create_menu()
 
-    def update_label_resized(self):
-        """
-        如果 composited_image_bgr 不為 None，就將它等比例縮放
-        貼到 label_composite 大小範圍內，空白補黑。
-        """
-        if self.composited_image_bgr is None:
-            return
+    def create_menu(self):
+        menubar = self.menuBar()
+        settings_menu = menubar.addMenu("設定")
 
-        label_w = self.label_composite.width()
-        label_h = self.label_composite.height()
+        camera_settings_action = QAction("攝影機設定", self)
+        camera_settings_action.triggered.connect(self.open_camera_settings_dialog)
+        settings_menu.addAction(camera_settings_action)
 
-        # 先以 keep-aspect-ratio 算出縮放後大小
-        src_h, src_w = self.composited_image_bgr.shape[:2]
-        scale = min(label_w / src_w, label_h / src_h)
-        new_w = int(src_w * scale)
-        new_h = int(src_h * scale)
+    def create_control_panel(self):
+        panel = QHBoxLayout()
 
-        # 建立一張 label大小 的黑底
-        canvas = np.zeros((label_h, label_w, 3), dtype=np.uint8)
-        # 將 composited_image_bgr 縮放後貼上
-        resized = cv2.resize(self.composited_image_bgr, (new_w, new_h))
-        off_x = (label_w - new_w) // 2
-        off_y = (label_h - new_h) // 2
-        canvas[off_y : off_y + new_h, off_x : off_x + new_w] = resized
+        # 串流控制
+        self.start_btn = QPushButton("開始串流")
+        self.stop_btn = QPushButton("停止串流")
+        self.start_btn.clicked.connect(self.start_streams)
+        self.stop_btn.clicked.connect(self.stop_streams)
 
-        # 轉 QImage 顯示
-        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        h2, w2, ch = rgb.shape
-        qimg = QImage(rgb.data, w2, h2, ch * w2, QImage.Format_RGB888)
-        self.label_composite.setPixmap(QPixmap.fromImage(qimg))
+        # 顯示設定
+        self.aspect_ratio_combo = QComboBox()
+        self.aspect_ratio_combo.addItems(["16:9", "9:16"])
+        self.aspect_ratio_combo.setCurrentText(self.display_settings["aspect_ratio"])
+        self.aspect_ratio_combo.currentTextChanged.connect(
+            self.on_display_settings_changed
+        )
 
-    # ============ 串流控制 ============
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.addItems(["1080p", "720p"])
+        self.resolution_combo.setCurrentText(self.display_settings["resolution"])
+        self.resolution_combo.currentTextChanged.connect(
+            self.on_display_settings_changed
+        )
+
+        self.rotation_check = QCheckBox("旋轉")
+        self.rotation_check.setChecked(self.display_settings["rotation"])
+        self.rotation_check.stateChanged.connect(self.on_display_settings_changed)
+
+        # 添加到面板
+        panel.addWidget(self.start_btn)
+        panel.addWidget(self.stop_btn)
+        panel.addWidget(QLabel("畫面比例:"))
+        panel.addWidget(self.aspect_ratio_combo)
+        panel.addWidget(QLabel("解析度:"))
+        panel.addWidget(self.resolution_combo)
+        panel.addWidget(self.rotation_check)
+        panel.addStretch()
+
+        return panel
+
+    def on_display_settings_changed(self):
+        """當顯示設定改變時更新"""
+        self.display_settings.update(
+            {
+                "aspect_ratio": self.aspect_ratio_combo.currentText(),
+                "resolution": self.resolution_combo.currentText(),
+                "rotation": self.rotation_check.isChecked(),
+            }
+        )
+        self.update_composite()
+
     def start_streams(self):
-        self.stop_streams()
-        self.latest_frames = {}
-        for cam_id, cfg in self.camera_configs.items():
-            if cfg.get("enabled", False):
-                url = self.build_rtsp_url(cfg)
-                thr = VideoThread(url, cam_id)
-                thr.frame_signal.connect(self.update_frame)
-                thr.error_signal.connect(self.handle_error)
-                thr.start()
-                self.threads[cam_id] = thr
+        """開始所有已啟用攝影機的串流"""
+        for cam_id, config in self.camera_configs.items():
+            if config["enabled"]:
+                rtsp_url = f"rtsp://{config['user']}:{config['pwd']}@{config['ip']}:{config['port']}/"
+                thread = VideoThread(rtsp_url, cam_id)
+                thread.frame_signal.connect(self.update_frame)
+                thread.error_signal.connect(self.handle_error)
+                thread.start()
+                self.threads[cam_id] = thread
 
     def stop_streams(self):
-        for cam_id, thr in self.threads.items():
-            thr.stop()
+        """停止所有串流執行緒"""
+        for thread in self.threads.values():
+            thread.stop()
         self.threads.clear()
 
-    def build_rtsp_url(self, cfg):
-        ip = cfg["ip"]
-        port = cfg["port"]
-        user = cfg["user"]
-        pwd = cfg["pwd"]
-        if user:
-            return f"rtsp://{user}:{pwd}@{ip}:{port}/stream"
-        else:
-            return f"rtsp://{ip}:{port}/stream"
-
-    # ============ 畫面更新、拼接 & 重繪 =============
     def update_frame(self, frame, cam_id):
+        """接收來自攝影機的影格信號"""
         self.latest_frames[cam_id] = frame
         self.update_composite()
 
     def update_composite(self):
-        rotation = self.rotation_check.isChecked()
-        resolution = self.resolution_combo.currentText()
+        """更新拼接影像"""
+        if not self.latest_frames:
+            return
 
-        if resolution == "1080p":
-            if rotation:
-                final_w, final_h = (1080, 1920)
-            else:
-                final_w, final_h = (1920, 1080)
-        elif resolution == "720p":
-            if rotation:
-                final_w, final_h = (720, 1280)
-            else:
-                final_w, final_h = (1280, 720)
-        aspect_ratio = self.aspect_ratio_combo.currentText()
-        resolution = self.resolution_combo.currentText()
+        # 獲取目標尺寸
+        aspect = self.display_settings["aspect_ratio"]
+        res = self.display_settings["resolution"]
+        final_w, final_h = self.display_settings["resolutions"][res][aspect]
 
-        if resolution == "1080p":
-            if aspect_ratio == "16:9":
-                final_w, final_h = (1920, 1080)
-            elif aspect_ratio == "9:16":
-                final_w, final_h = (1080, 1920)
-        elif resolution == "720p":
-            if aspect_ratio == "16:9":
-                final_w, final_h = (1280, 720)
-            elif aspect_ratio == "9:16":
-                final_w, final_h = (720, 1280)
-
+        # 建立拼接畫布
         cell_w, cell_h = final_w // 2, final_h // 2
         collage = np.zeros((final_h, final_w, 3), dtype=np.uint8)
 
-        for i, cid in enumerate([1, 2, 3, 4]):
-            r = i // 2
-            c = i % 2
-            y0 = r * cell_h
-            x0 = c * cell_w
+        try:
+            for i, cam_id in enumerate([1, 2, 3, 4]):
+                r, c = divmod(i, 2)
+                y0, x0 = r * cell_h, c * cell_w
 
-            if self.camera_configs[cid]["enabled"]:
-                if cid in self.latest_frames:
-                    frame = self.latest_frames[cid]
-                    if aspect_ratio == "9:16":
-                        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-                    small = self.fit_frame_to_cell(frame, cell_w, cell_h)
-                else:
-                    small = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
-                    cv2.putText(
-                        small,
-                        f"Cam {cid}\nNoSig",
-                        (10, cell_h // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 0, 255),
-                        2,
-                    )
-            else:
-                small = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
-                cv2.putText(
-                    small,
-                    f"Cam {cid} Off",
-                    (10, cell_h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
-                )
+                frame = self.get_camera_frame(cam_id, cell_w, cell_h)
+                if frame is not None:
+                    # 畫標籤
+                    if self.camera_configs[cam_id]["label_path"]:
+                        label_path = self.camera_configs[cam_id]["label_path"]
+                        self.draw_label_car_polygon(frame, label_path)
 
-            collage[y0 : y0 + cell_h, x0 : x0 + cell_w] = small
+                    collage[y0 : y0 + cell_h, x0 : x0 + cell_w] = frame
 
-        self.composited_image_bgr = collage
-        self.update_label_resized()
+            if self.display_settings["rotation"]:
+                collage = cv2.rotate(collage, cv2.ROTATE_90_CLOCKWISE)
+
+            self.composited_image_bgr = collage
+            self.update_label_resized()
+
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", f"更新影像時發生錯誤: {str(e)}")
+
+    def get_camera_frame(self, cam_id, cell_w, cell_h):
+        """獲取單一攝影機的影格"""
+        if not self.camera_configs[cam_id]["enabled"]:
+            return self.create_offline_frame(f"Camera {cam_id} 已停用", cell_w, cell_h)
+
+        if cam_id not in self.latest_frames:
+            return self.create_offline_frame(f"Camera {cam_id} 無訊號", cell_w, cell_h)
+
+        frame = self.latest_frames[cam_id]
+        return self.fit_frame_to_cell(frame, cell_w, cell_h)
+
+    def create_offline_frame(self, message, width, height):
+        """創建離線狀態的影格"""
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.putText(
+            frame,
+            message,
+            (10, height // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 255),
+            2,
+        )
+        return frame
 
     def fit_frame_to_cell(self, frame_bgr, cell_w, cell_h):
         """
@@ -480,20 +547,23 @@ class MainWindow(QMainWindow):
 
         return canvas
 
-    def draw_label_car_polygon(self, image_bgr, label_json_path, color_bgr):
+    def draw_label_car_polygon(self, image_bgr, label_json_path):
         """
-        在縮放後影像 (image_bgr) 上畫car多邊形 (points_normalized)
-        若 side panel有關閉, 不畫
-        color_bgr 由 side panel決定
+        在縮放後影像上畫出所有類型的標籤多邊形
+        根據 side panel 的設定決定是否顯示及顏色
         """
         h, w = image_bgr.shape[:2]
         try:
             with open(label_json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for obj in data.get("labels", []):
-                if obj.get("label_type") == "car":
+                label_type = obj.get("label_type")
+                if label_type in ["car", "parking", "plate"]:
+                    # 獲取顏色（目前都使用一般狀態的顏色）
+                    color = self.label_config_dock.get_label_color(label_type)
+
                     pts_norm = obj.get("points_normalized", [])
-                    if pts_norm:  # Only draw if points_normalized is not empty
+                    if pts_norm:
                         polygon = []
                         for nx, ny in pts_norm:
                             px = int(nx * w)
@@ -501,9 +571,28 @@ class MainWindow(QMainWindow):
                             polygon.append((px, py))
                         if polygon:
                             poly_np = np.array([polygon], dtype=np.int32)
-                            cv2.polylines(image_bgr, poly_np, True, color_bgr, 2)
+                            cv2.polylines(image_bgr, poly_np, True, color, 2)
         except Exception as e:
             print(f"draw_label_car_polygon error: {e}")
+
+    def update_label_resized(self):
+        """將拼接影像轉換為 QPixmap 並顯示在 QLabel 上"""
+        if self.composited_image_bgr is not None:
+            # 轉換 BGR 到 RGB
+            image_rgb = cv2.cvtColor(self.composited_image_bgr, cv2.COLOR_BGR2RGB)
+            height, width, channel = image_rgb.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(
+                image_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888
+            )
+            pixmap = QPixmap.fromImage(q_img)
+            self.display_label.setPixmap(
+                pixmap.scaled(
+                    self.display_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
 
     # ============ 視窗關閉前 ============
     def closeEvent(self, event):
@@ -513,15 +602,19 @@ class MainWindow(QMainWindow):
 
     # ============ 錯誤處理 ============
     def handle_error(self, msg, cam_id):
-        print(f"Camera {cam_id} Error: {msg}")
+        QMessageBox.warning(self, "攝影機錯誤", f"Camera {cam_id} 錯誤: {msg}")
 
     # ============ 設定存取 ============
     def open_camera_settings_dialog(self):
         dlg = CameraSettingsDialog(self.camera_configs, self)
+        dlg.settings_changed.connect(self.update_composite)  # 新增此行
         if dlg.exec_():
             self.camera_configs = dlg.get_configs()
             self.save_settings()
             QMessageBox.information(self, "訊息", "已更新攝影機設定")
+            self.stop_streams()
+            self.start_streams()
+            self.update_composite()  # 新增此行以即時更新畫面
 
     def load_settings(self):
         s = self.settings
