@@ -463,3 +463,16 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Detection error: {e}")
             return frame
+
+    def set_camera_capture_data(self, data):
+        """Set camera capture data from loaded settings."""
+        # Assuming data is a dictionary with camera settings
+        # You can implement the logic to apply these settings
+        print("Camera capture data set:", data)
+        # Example: self.camera_settings = data
+
+    def set_intermediate_test_data(self, data):
+        """Set intermediate test data from loaded settings."""
+        # Assuming data is a dictionary with intermediate test settings
+        print("Intermediate test data set:", data)
+        # Example: self.intermediate_test_settings = data
