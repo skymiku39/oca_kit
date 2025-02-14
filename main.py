@@ -2,6 +2,7 @@ import sys
 import cv2
 import json
 import numpy as np
+import os
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings, QRect
 from PyQt5.QtGui import QImage, QPixmap, QColor
 from PyQt5.QtWidgets import (
@@ -24,6 +25,16 @@ from PyQt5.QtWidgets import (
     QColorDialog,
     QComboBox,
 )
+from ultralytics import YOLO
+
+COLORS = [
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 0, 255),
+    (255, 255, 0),
+    (255, 0, 255),
+    (0, 255, 255),
+]
 
 
 # =============================================================================
@@ -363,6 +374,10 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.label_config_dock)
         self.label_config_dock.label_config_changed.connect(self.update_composite)
 
+        self.detection_enabled = False
+        self.yolo_detector = None
+        self.detection_settings = {"enabled": False, "model": "yolov8n.pt"}
+
         self.init_ui()
 
     def init_ui(self):
@@ -385,6 +400,10 @@ class MainWindow(QMainWindow):
 
         # 建立選單
         self.create_menu()
+
+        self.label_config_dock.load_settings(
+            self.settings
+        )  # Load label colors/settings
 
     def create_menu(self):
         menubar = self.menuBar()
@@ -422,7 +441,11 @@ class MainWindow(QMainWindow):
         self.rotation_check.setChecked(self.display_settings["rotation"])
         self.rotation_check.stateChanged.connect(self.on_display_settings_changed)
 
-        # 添加到面板
+        # YOLO Detection control (new independent dialog)
+        self.detection_button = QPushButton("YOLO檢測設定")
+        self.detection_button.clicked.connect(self.open_yolo_settings_dialog)
+
+        # Adding widgets to the panel
         panel.addWidget(self.start_btn)
         panel.addWidget(self.stop_btn)
         panel.addWidget(QLabel("畫面比例:"))
@@ -430,6 +453,7 @@ class MainWindow(QMainWindow):
         panel.addWidget(QLabel("解析度:"))
         panel.addWidget(self.resolution_combo)
         panel.addWidget(self.rotation_check)
+        panel.addWidget(self.detection_button)
         panel.addStretch()
 
         return panel
@@ -497,6 +521,18 @@ class MainWindow(QMainWindow):
 
             if self.display_settings["rotation"]:
                 collage = cv2.rotate(collage, cv2.ROTATE_90_CLOCKWISE)
+
+            if self.detection_enabled and self.yolo_detector is not None:
+                detection_mode = self.detection_settings.get("mode", "拼接圖片檢測")
+                if detection_mode == "拼接圖片檢測":
+                    collage = self.apply_detection(collage)
+                else:  # "單張圖片檢測"
+                    for i in range(4):
+                        r, c = divmod(i, 2)
+                        y0, x0 = r * cell_h, c * cell_w
+                        cell_img = collage[y0 : y0 + cell_h, x0 : x0 + cell_w]
+                        cell_img = self.apply_detection(cell_img)
+                        collage[y0 : y0 + cell_h, x0 : x0 + cell_w] = cell_img
 
             self.composited_image_bgr = collage
             self.update_label_resized()
@@ -650,7 +686,147 @@ class MainWindow(QMainWindow):
             s.setValue(f"Camera{cid}/pwd", cfg["pwd"])
             s.setValue(f"Camera{cid}/enabled", str(cfg["enabled"]))
             s.setValue(f"Camera{cid}/label_path", cfg["label_path"])
+        self.label_config_dock.save_settings(
+            self.settings
+        )  # Save label colors/settings
         s.sync()
+
+    def open_yolo_settings_dialog(self):
+        dlg = YoloSettingsDialog(self.detection_settings, self)
+        dlg.detection_settings_changed.connect(self.on_yolo_settings_changed)
+        dlg.exec_()
+
+    def on_yolo_settings_changed(self, new_settings):
+        self.detection_settings = new_settings
+        self.detection_enabled = new_settings.get("enabled", False)
+        if self.detection_enabled:
+            self.load_yolo_model(new_settings.get("model", "yolov8n.pt"))
+        else:
+            self.yolo_detector = None
+        self.update_composite()
+
+    def load_yolo_model(self, model_path):
+        try:
+            self.yolo_detector = YOLO(model_path)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "YOLO Model Error", f"Failed to load YOLO model: {str(e)}"
+            )
+            self.yolo_detector = None
+            self.detection_enabled = False
+
+    def apply_detection(self, frame):
+        """Apply YOLO detection on frame and draw bounding boxes"""
+        try:
+            results = self.yolo_detector(frame)
+            if len(results) == 0:
+                return frame
+            result = results[0]
+            if result.boxes is None:
+                return frame
+            # Convert detections to numpy array with shape [N,6] (x1, y1, x2, y2, conf, cls)
+            dets = result.boxes.data.cpu().numpy()
+            for det in dets:
+                x1, y1, x2, y2, conf, cls_id = det
+                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                if hasattr(self.yolo_detector, "names"):
+                    label = self.yolo_detector.names[int(cls_id)]
+                else:
+                    label = str(int(cls_id))
+                color = COLORS[int(cls_id) % len(COLORS)]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(
+                    frame,
+                    f"{label} {conf:.2f}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                )
+            return frame
+        except Exception as e:
+            print(f"Detection error: {e}")
+            return frame
+
+
+class YoloSettingsDialog(QDialog):
+    detection_settings_changed = pyqtSignal(dict)
+
+    def __init__(self, detection_settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("YOLO檢測設定")
+        self.detection_settings = dict(detection_settings)  # make a copy
+        self.init_ui()
+
+    def init_ui(self):
+        form_layout = QFormLayout()
+
+        # Detection enable checkbox
+        self.enable_checkbox = QCheckBox("啟用檢測")
+        self.enable_checkbox.setChecked(self.detection_settings.get("enabled", False))
+        form_layout.addRow("檢測啟用:", self.enable_checkbox)
+
+        # Model selection: QComboBox and a browse button
+        self.model_combo = QComboBox()
+        default_models = [
+            "yolov8n.pt",
+            "yolov8s.pt",
+            "yolov8m.pt",
+            "yolov8l.pt",
+            "yolov8x.pt",
+            "自選模型",
+        ]
+        self.model_combo.addItems(default_models)
+        current_model = self.detection_settings.get("model", "yolov8n.pt")
+        if current_model not in default_models:
+            self.model_combo.addItem(current_model)
+        self.model_combo.setCurrentText(current_model)
+
+        self.choose_model_btn = QPushButton("選擇模型")
+        self.choose_model_btn.clicked.connect(self.choose_model_file)
+        hbox_model = QHBoxLayout()
+        hbox_model.addWidget(self.model_combo)
+        hbox_model.addWidget(self.choose_model_btn)
+        form_layout.addRow("模型:", hbox_model)
+
+        # Detection mode selection
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["拼接圖片檢測", "單張圖片檢測"])
+        current_mode = self.detection_settings.get("mode", "拼接圖片檢測")
+        self.mode_combo.setCurrentText(current_mode)
+        form_layout.addRow("檢測方式:", self.mode_combo)
+
+        # Action buttons
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("儲存")
+        save_btn.clicked.connect(self.on_save)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        form_layout.addRow(btn_layout)
+
+        self.setLayout(form_layout)
+
+    def choose_model_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "選擇 YOLO 模型檔案",
+            "",
+            "PyTorch Model Files (*.pt);;All Files (*)",
+        )
+        if file_path:
+            if self.model_combo.findText(file_path) == -1:
+                self.model_combo.addItem(file_path)
+            self.model_combo.setCurrentText(file_path)
+
+    def on_save(self):
+        self.detection_settings["enabled"] = self.enable_checkbox.isChecked()
+        self.detection_settings["model"] = self.model_combo.currentText()
+        self.detection_settings["mode"] = self.mode_combo.currentText()
+        self.detection_settings_changed.emit(self.detection_settings)
+        self.accept()
 
 
 def main():
