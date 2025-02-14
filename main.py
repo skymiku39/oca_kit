@@ -25,21 +25,6 @@ def main():
     win = MainWindow()
     win.show()
 
-    # 加載 CameraCapture.json 的設定
-    camera_capture_path = "C:/github/oca_kit/CameraCapture.json"
-    camera_capture_data = load_settings(camera_capture_path)
-
-    # 加載 中間測試.json 的設定
-    intermediate_test_path = "C:/github/oca_kit/中間測試.json"
-    intermediate_test_data = load_settings(intermediate_test_path)
-
-    # 如果有加載到資料，則設置到 MainWindow
-    if camera_capture_data:
-        win.set_camera_capture_data(camera_capture_data)  # 設置相機捕捉資料
-
-    if intermediate_test_data:
-        win.set_intermediate_test_data(intermediate_test_data)  # 設置中間測試資料
-
     sys.exit(app.exec_())
 
 
