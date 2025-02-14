@@ -1,0 +1,12 @@
+# GUI
+PyQt5>=5.15.0
+
+# Image Processing
+opencv-python>=4.5.0
+numpy>=1.19.0
+
+# Object Detection
+ultralytics>=8.0.0
+
+# Optional but recommended for better performance
+torch>=2.0.0  # PyTorch for YOLO 
