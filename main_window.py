@@ -304,7 +304,12 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             for obj in data.get("labels", []):
                 label_type = obj.get("label_type")
+                # Check if the label is visible
                 if label_type in ["car", "parking", "plate"]:
+                    visible = self.label_config_dock.label_states[label_type]["visible"]
+                    if not visible:
+                        continue  # Skip drawing if not visible
+
                     # 獲取顏色（目前都使用一般狀態的顏色）
                     color = self.label_config_dock.get_label_color(label_type)
 
@@ -320,7 +325,6 @@ class MainWindow(QMainWindow):
                             cv2.polylines(image_bgr, poly_np, True, color, 2)
         except FileNotFoundError as e:
             print(f"draw_label_car_polygon error: {e}")
-            # Return an empty frame or handle the error as needed
             return image_bgr  # Return the original image without any modifications
         except Exception as e:
             print(f"draw_label_car_polygon unexpected error: {e}")
